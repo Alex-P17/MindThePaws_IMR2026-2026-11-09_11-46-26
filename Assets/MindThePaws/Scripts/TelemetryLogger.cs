@@ -27,10 +27,78 @@ namespace MindThePaws
             "timestamp_utc,session_id,participant,trial,object,condition,surface," +
             "hidden_x,hidden_y,hidden_z,guess_x,guess_y,guess_z," +
             "error_m,error_horizontal_m,angle_deg,hide_to_guess_s,guess_duration_s," +
-            "item_index,distraction_count,distraction_seconds,safety_triggered";
+            "item_index,distraction_count,distraction_seconds,safety_triggered," +
+            "baseline_bpm,baseline_source," +
+            "memtask,memtask_max_level,memtask_max_sequence,memtask_correct,memtask_mistakes," +
+            "safety_choices,chaos_intensity";
+
+        const string EventsHeader = "timestamp_utc,session_id,participant,event,detail";
 
         string path;
         string sessionId;
+        float baselineBpm = float.NaN;
+        string baselineSource = "";
+
+        public float BaselineBpm => baselineBpm;
+
+        string safetyChoices = "";
+        float chaosIntensity = 1f;
+        string eventsPath;
+
+        /// Alegerile din Pătura Moale (continue / gentler / debrief), cumulate pe sesiune, plus intensitatea curentă a haosului.
+        public void AddSafetyChoice(string choice, float intensity)
+        {
+            safetyChoices = string.IsNullOrEmpty(safetyChoices) ? choice : safetyChoices + ";" + choice;
+            chaosIntensity = intensity;
+            LogEvent("safety_choice", choice + " (chaos_intensity=" + intensity.ToString("F2", Inv) + ")");
+        }
+
+        public void SetChaosIntensity(float intensity) { chaosIntensity = intensity; }
+
+        public void ResetSession()
+        {
+            safetyChoices = "";
+            chaosIntensity = 1f;
+        }
+
+        /// Un rând într-un CSV separat de evenimente (mindthepaws_events.csv): pătură, promisiune, puls, bule sparte...
+        public void LogEvent(string evt, string detail)
+        {
+            if (string.IsNullOrEmpty(eventsPath)) return;
+            string line = string.Join(",", DateTime.UtcNow.ToString("o", Inv), sessionId, participantId, Clean(evt), Clean(detail));
+            try
+            {
+                if (!File.Exists(eventsPath)) File.WriteAllText(eventsPath, EventsHeader + "\n");
+                File.AppendAllText(eventsPath, line + "\n");
+            }
+            catch (Exception e) { Debug.LogWarning($"[MindThePaws] Nu pot scrie evenimentul: {e.Message}"); }
+            Debug.Log($"[MindThePaws] eveniment: {evt} · {detail}");
+        }
+
+        string memTask = "";
+        int memMaxLevel, memMaxSeq, memCorrect, memMistakes;
+
+        /// Rezultatul provocării de memorie de lucru din runda curentă (se scrie pe rândurile de trial ale rundei).
+        public void SetMemoryTask(string task, int maxLevel, int maxSequence, int correct, int mistakes)
+        {
+            memTask = Clean(task);
+            memMaxLevel = maxLevel;
+            memMaxSeq = maxSequence;
+            memCorrect = correct;
+            memMistakes = mistakes;
+            if (!string.IsNullOrEmpty(task))
+                Debug.Log($"[MindThePaws] {task}: nivel maxim {maxLevel}, secvență maximă {maxSequence}, {correct} corecte, {mistakes} greșeli");
+        }
+
+        /// Pulsul de calm măsurat în scena „Ceai cu Lumi” (sursa: "simulated" sau numele senzorului extern).
+        /// Se scrie pe fiecare rând de trial din sesiunea curentă.
+        public void SetBaseline(float bpm, string source)
+        {
+            baselineBpm = bpm;
+            baselineSource = Clean(source);
+            Debug.Log($"[MindThePaws] Puls de calm (baseline): {bpm:0} BPM · sursă: {source}");
+            LogEvent("baseline_bpm", bpm.ToString("F1", Inv) + " (" + source + ")");
+        }
         static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
         public string FilePath => path;
@@ -38,6 +106,7 @@ namespace MindThePaws
         void Awake()
         {
             path = Path.Combine(Application.persistentDataPath, fileName);
+            eventsPath = Path.Combine(Application.persistentDataPath, "mindthepaws_events.csv");
             sessionId = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss", Inv);
             try
             {
@@ -115,7 +184,10 @@ namespace MindThePaws
                 F(guess.x), F(guess.y), F(guess.z),
                 F(errorM), F(errorHorizontalM), F(angleDeg),
                 F(hideToGuessS), F(guessDurationS),
-                itemIndex.ToString(Inv), distractionCount.ToString(Inv), F(distractionSeconds), safetyTriggered ? "1" : "0");
+                itemIndex.ToString(Inv), distractionCount.ToString(Inv), F(distractionSeconds), safetyTriggered ? "1" : "0",
+                float.IsNaN(baselineBpm) ? "" : baselineBpm.ToString("F1", Inv), baselineSource,
+                memTask, memMaxLevel.ToString(Inv), memMaxSeq.ToString(Inv), memCorrect.ToString(Inv), memMistakes.ToString(Inv),
+                safetyChoices, chaosIntensity.ToString("F2", Inv));
             try { File.AppendAllText(path, line + "\n"); }
             catch (Exception e) { Debug.LogError($"[MindThePaws] Nu pot scrie în CSV: {e.Message}"); }
             Debug.Log($"[MindThePaws] trial {trial}.{itemIndex}: {errorM * 100f:0.0} cm");

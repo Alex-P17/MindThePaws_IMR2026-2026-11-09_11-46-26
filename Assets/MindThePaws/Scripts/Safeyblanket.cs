@@ -19,7 +19,9 @@ namespace MindThePaws
         public float palmFacingAngle = 50f;
 
         public System.Action onStart;
-        public System.Action<bool> onFinish;
+        /// 1 = Continuă, 2 = Mergi la Debriefing, 3 = Haos mai blând.
+        public System.Action<int> onFinish;
+        public const int ChoiceContinue = 1, ChoiceDebrief = 2, ChoiceGentler = 3;
 
         public bool Running { get; private set; }
         public bool Choosing { get; private set; }
@@ -35,10 +37,11 @@ namespace MindThePaws
         GameObject hudRoot;
         Transform hudOrb;
         GameObject breath;
-        TextMesh breathText;
-        readonly GameObject[] buttons = new GameObject[2];
-        readonly TextMesh[] buttonLabels = new TextMesh[2];
-        TextMesh promptText;
+        CozyLabel breathText;
+        readonly GameObject[] buttons = new GameObject[3];
+        readonly CozyLabel[] buttonLabels = new CozyLabel[3];
+        static readonly int[] ChoiceOfButton = { ChoiceContinue, ChoiceGentler, ChoiceDebrief };
+        CozyLabel promptText;
         bool skip;
         int choice;
 
@@ -140,11 +143,10 @@ namespace MindThePaws
             hudRoot.transform.SetParent(head, false);
             hudRoot.transform.localPosition = new Vector3(-0.2f, -0.17f, 0.65f);
             hudOrb = Graybox.Prim(PrimitiveType.Sphere, hudRoot.transform, Vector3.zero, Vector3.one * 0.035f, Graybox.MakeMat(Gold)).transform;
-            var tm = Graybox.Text("BlanketHudText", 0.0022f);
-            tm.richText = true;
-            tm.text = "Pătura Moale\n<size=40>ține palma spre tine</size>";
+            var tm = CozyUI.Label("BlanketHudText", "Pătura Moale\n<size=40>ține palma spre tine</size>", 26, CozyUI.Ink, CozyUI.MoodFill(CozyMood.Blanket), CozyUI.Gold);
             tm.transform.SetParent(hudRoot.transform, false);
-            tm.transform.localPosition = new Vector3(0f, -0.055f, 0f);
+            tm.transform.localPosition = new Vector3(0f, -0.065f, 0f);
+            tm.transform.localRotation = Quaternion.identity;
         }
 
         public void Begin()
@@ -177,8 +179,7 @@ namespace MindThePaws
         {
             breath = new GameObject("BreathBubble");
             Graybox.Prim(PrimitiveType.Sphere, breath.transform, Vector3.zero, Vector3.one, Graybox.MakeMat(Gold));
-            breathText = Graybox.Text("BreathText", 0.0045f);
-            breathText.richText = true;
+            breathText = CozyUI.Label("BreathText", "", 44, CozyUI.Ink, CozyUI.MoodFill(CozyMood.Blanket), CozyUI.Gold, 620f);
             breath.transform.position = BreathTarget();
             breath.transform.localScale = Vector3.one * 0.12f;
             for (int c = 0; c < breatheCycles && !skip; c++)
@@ -196,7 +197,7 @@ namespace MindThePaws
             Hovering = false;
             DestroyChoice();
             Running = false;
-            if (onFinish != null) onFinish(choice == 1);
+            if (onFinish != null) onFinish(choice);
         }
 
         IEnumerator Breathe(bool inhale, int cycle)
@@ -208,7 +209,7 @@ namespace MindThePaws
                 float s = inhale ? Mathf.Lerp(0.12f, 0.3f, k) : Mathf.Lerp(0.3f, 0.12f, k);
                 breath.transform.localScale = Vector3.one * s;
                 breath.transform.position = Vector3.Lerp(breath.transform.position, BreathTarget(), Mathf.Clamp01(5f * Time.unscaledDeltaTime));
-                breathText.transform.position = breath.transform.position + Vector3.up * (s * 0.5f + 0.1f);
+                breathText.transform.position = breath.transform.position + Vector3.up * (s * 0.5f + 0.06f);
                 breathText.transform.rotation = Quaternion.LookRotation(breathText.transform.position - head.position, Vector3.up);
                 breathText.text = (inhale ? "Inspiră..." : "Expiră...") + "\n<size=40>" + (cycle + 1) + "/" + breatheCycles + "  ·  pinch = sari peste</size>";
                 yield return null;
@@ -220,32 +221,28 @@ namespace MindThePaws
             var f = FlatForward();
             var r = Vector3.Cross(Vector3.up, f);
             var basePos = head.position + f * 0.9f + Vector3.down * 0.08f;
-            string[] names = { "Continuă\n<size=40>(haos la jumătate)</size>", "Mergi la\n<size=40>Debriefing</size>" };
-            Color[] cols = { new Color(0.55f, 0.9f, 0.6f), new Color(0.6f, 0.75f, 1f) };
-            for (int i = 0; i < 2; i++)
+            string[] names = { "Continuă\n<size=40>(la fel ca înainte)</size>", "Haos mai blând\n<size=40>(o treaptă mai puțin)</size>", "Mergi la\n<size=40>Debriefing</size>" };
+            Color[] cols = { new Color(0.55f, 0.9f, 0.6f), new Color(1f, 0.78f, 0.86f), new Color(0.6f, 0.75f, 1f) };
+            for (int i = 0; i < buttons.Length; i++)
             {
                 var b = new GameObject("BlanketChoice" + i);
                 Graybox.Prim(PrimitiveType.Sphere, b.transform, Vector3.zero, Vector3.one, Graybox.MakeMat(cols[i]));
-                b.transform.position = basePos + r * (i == 0 ? -0.3f : 0.3f);
+                b.transform.position = basePos + r * ((i - 1) * 0.36f);
                 b.transform.localScale = Vector3.one * 0.12f;
                 buttons[i] = b;
-                var tm = Graybox.Text("BlanketChoiceText" + i, 0.0035f);
-                tm.richText = true;
-                tm.text = names[i];
+                var tm = CozyUI.Label("BlanketChoiceText" + i, names[i], 38, CozyUI.Ink, CozyUI.Cream, cols[i]);
                 tm.transform.position = b.transform.position + Vector3.up * 0.13f;
                 tm.transform.rotation = Quaternion.LookRotation(tm.transform.position - head.position, Vector3.up);
                 buttonLabels[i] = tm;
             }
-            promptText = Graybox.Text("BlanketPrompt", 0.0035f);
-            promptText.richText = true;
-            promptText.text = "Respirăm împreună.\nCe vrei să facem acum?";
+            promptText = CozyUI.Label("BlanketPrompt", "Respirăm împreună.\nCe vrei să facem acum?", 42, CozyUI.Ink, CozyUI.MoodFill(CozyMood.Blanket), CozyUI.Gold);
             promptText.transform.position = basePos + Vector3.up * 0.3f;
             promptText.transform.rotation = Quaternion.LookRotation(promptText.transform.position - head.position, Vector3.up);
         }
 
         void DestroyChoice()
         {
-            for (int i = 0; i < 2; i++)
+            for (int i = 0; i < buttons.Length; i++)
             {
                 if (buttons[i] != null) Destroy(buttons[i]);
                 if (buttonLabels[i] != null) Destroy(buttonLabels[i].gameObject);
@@ -267,7 +264,7 @@ namespace MindThePaws
             }
             int best = -1;
             float bestD = 0.1f;
-            for (int i = 0; i < 2; i++)
+            for (int i = 0; i < buttons.Length; i++)
             {
                 if (buttons[i] == null) continue;
                 var oc = buttons[i].transform.position - ray.origin;
@@ -280,13 +277,13 @@ namespace MindThePaws
                     best = i;
                 }
             }
-            for (int i = 0; i < 2; i++)
+            for (int i = 0; i < buttons.Length; i++)
                 if (buttons[i] != null) buttons[i].transform.localScale = Vector3.one * (i == best ? 0.14f : 0.12f);
             if (best >= 0)
             {
                 Hovering = true;
                 HoverPoint = buttons[best].transform.position;
-                if (click) choice = best + 1;
+                if (click && best < ChoiceOfButton.Length) choice = ChoiceOfButton[best];
             }
         }
 
