@@ -9,6 +9,8 @@ namespace MindThePaws
         public float lookAngle = 15f;
         public int bubbleCount = 10;
         public float zoomieSpeed = 1.1f;
+        [Tooltip("Raza cercului pe care aleargă Mochi în jurul tău (m). Înainte 0.6 m: era aproape mereu sub / în spatele tău.")]
+        public float zoomieRadius = 1.2f;
         public int distractionLookCount;
         public float distractionLookSeconds;
 
@@ -151,11 +153,11 @@ namespace MindThePaws
                 {
                     // Mochi „Zoomie”: cercuri rapide în jurul picioarelor
                     go = Graybox.Corgi("Mochi_Zoomie", PuppyKeys[0]);
-                    go.transform.position = center + new Vector3(0.55f, 0f, 0f);
+                    go.transform.position = center + new Vector3(zoomieRadius, 0f, 0f);
                     var zr = go.AddComponent<ZoomieRunner>();
                     zr.head = head;
                     zr.floorY = floorY;
-                    zr.radius = 0.6f;
+                    zr.radius = zoomieRadius;
                     zr.speed = zoomieSpeed * Mathf.Lerp(0.7f, 1f, intensity);
                     break;
                 }

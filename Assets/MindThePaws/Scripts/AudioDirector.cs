@@ -17,6 +17,9 @@ namespace MindThePaws
         [Range(0f, 1f)] public float sfxVolume = 0.9f;
         public float crossfadeSeconds = 2.2f;
         public bool playMusic = true;
+        [Tooltip("Folosește plugin-ul de spațializare (Meta XR Audio). Dacă nu se aude nimic pe cască, lasă-l oprit: " +
+                 "sunetele rămân 3D (panoramare + atenuare cu distanța), doar fără HRTF.")]
+        public bool useSpatializer = false;
 
         public static readonly string[] Keys = { "calm_music", "chaos_music", "poof", "place", "bark", "purr", "chime", "grow", "breath", "oops" };
 
@@ -34,7 +37,10 @@ namespace MindThePaws
         void Awake()
         {
             Instance = this;
-            spatializerAvailable = !string.IsNullOrEmpty(AudioSettings.GetSpatializerPluginName());
+            spatializerAvailable = useSpatializer && !string.IsNullOrEmpty(AudioSettings.GetSpatializerPluginName());
+            // pe Quest, după un dialog de sistem (permisiuni Space Setup etc.) ascultătorul poate rămâne pe pauză / mut
+            AudioListener.pause = false;
+            AudioListener.volume = 1f;
             musicA = MakeMusicSource("MusicA");
             musicB = MakeMusicSource("MusicB");
             LoadAll();
@@ -87,7 +93,38 @@ namespace MindThePaws
         public void EnsureListener(Transform head)
         {
             if (head == null) return;
-            if (FindFirstObjectByType<AudioListener>() == null) head.gameObject.AddComponent<AudioListener>();
+            var all = FindObjectsByType<AudioListener>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            AudioListener active = null;
+            foreach (var l in all)
+                if (l != null && l.isActiveAndEnabled) { active = l; break; }
+            if (active == null)
+            {
+                // niciun ascultător ACTIV (unul dezactivat / pe un obiect inactiv nu se pune) → îl punem pe cameră
+                active = head.GetComponent<AudioListener>();
+                if (active == null) active = head.gameObject.AddComponent<AudioListener>();
+                active.enabled = true;
+            }
+            int n = 0;
+            foreach (var l in all) if (l != null && l.isActiveAndEnabled) n++;
+            if (n > 1) Debug.LogWarning($"[MindThePaws] {n} AudioListener-e active în scenă: lasă doar unul (pe CenterEyeAnchor).");
+            Summary += $" · ascultător: {active.name}";
+            Debug.Log($"[MindThePaws] AudioListener: {active.name} · spatializer: {(spatializerAvailable ? AudioSettings.GetSpatializerPluginName() : "oprit")} · {AudioSettings.outputSampleRate} Hz");
+        }
+
+        void OnApplicationFocus(bool focus) { if (focus) ResumeAudio(); }
+        void OnApplicationPause(bool paused) { if (!paused) ResumeAudio(); }
+
+        /// După ce aplicația revine în prim-plan (meniul Quest, dialog de permisiuni), muzica poate rămâne oprită.
+        void ResumeAudio()
+        {
+            AudioListener.pause = false;
+            if (musicA == null || musicB == null || !playMusic || string.IsNullOrEmpty(currentMusicKey)) return;
+            var cur = aIsCurrent ? musicA : musicB;
+            if (cur.clip != null && !cur.isPlaying)
+            {
+                cur.Play();
+                if (fade >= 1f) cur.volume = musicVolume * (currentMusicKey == "breath" ? 1.25f : 1f);
+            }
         }
 
         // ------------------------------------------------------------ API static, sigur dacă lipsește directorul
@@ -126,7 +163,14 @@ namespace MindThePaws
             s.pitch = Mathf.Clamp(pitch, 0.3f, 3f);
             s.ignoreListenerPause = true;
             s.Play();
-            Destroy(go, clip.length / s.pitch + 0.2f);
+            StartCoroutine(DestroyAfterUnscaled(go, clip.length / s.pitch + 0.2f));
+        }
+
+        // Destroy(go, t) numără timp SCALAT: cu Time.timeScale = 0 (Pătura Moale) sunetele nu se mai ștergeau
+        System.Collections.IEnumerator DestroyAfterUnscaled(GameObject go, float seconds)
+        {
+            yield return new WaitForSecondsRealtime(seconds);
+            if (go != null) Destroy(go);
         }
 
         public void Play2D(string key, float volume, float pitch)
@@ -142,7 +186,7 @@ namespace MindThePaws
             s.pitch = Mathf.Clamp(pitch, 0.3f, 3f);
             s.ignoreListenerPause = true;
             s.Play();
-            Destroy(go, clip.length / s.pitch + 0.2f);
+            StartCoroutine(DestroyAfterUnscaled(go, clip.length / s.pitch + 0.2f));
         }
 
         public void SetMusic(CozyMood mood)
@@ -170,8 +214,39 @@ namespace MindThePaws
             fade = 0f;
         }
 
+        float watchdog;
+        bool diagLogged;
+
+        /// Starea audio, pe scurt (în debug overlay și în log): dacă vreuna e greșită, de acolo vine liniștea.
+        public string Diag
+        {
+            get
+            {
+                var cur = aIsCurrent ? musicA : musicB;
+                AudioListener l = null;
+                foreach (var x in FindObjectsByType<AudioListener>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+                    if (x != null && x.isActiveAndEnabled) { l = x; break; }
+                var cfg = AudioSettings.GetConfiguration();
+                return $"audio: ascultător={(l != null ? l.name : "NICIUNUL ACTIV")} · vol={AudioListener.volume:0.##} pauză={AudioListener.pause} · " +
+                       $"muzică={currentMusicKey ?? "-"} cântă={(cur != null && cur.isPlaying)} vol={(cur != null ? cur.volume : 0f):0.00} · " +
+                       $"{AudioSettings.outputSampleRate} Hz, {cfg.speakerMode}, buffer {cfg.dspBufferSize} · clipuri={clips.Count}";
+            }
+        }
+
         void Update()
         {
+            // paznic: dacă sistemul a oprit muzica pe ascuns, o repornim (o dată pe secundă)
+            watchdog += Time.unscaledDeltaTime;
+            if (watchdog > 1f)
+            {
+                watchdog = 0f;
+                ResumeAudio();
+                if (!diagLogged && Time.realtimeSinceStartup > 4f)
+                {
+                    diagLogged = true;
+                    Debug.Log("[MindThePaws] " + Diag);   // în logcat: adb logcat -s Unity | findstr MindThePaws
+                }
+            }
             if (fade >= 1f && !(musicA.isPlaying && musicB.isPlaying)) return;
             fade = Mathf.Min(1f, fade + Time.unscaledDeltaTime / Mathf.Max(0.05f, crossfadeSeconds));
             var cur = aIsCurrent ? musicA : musicB;

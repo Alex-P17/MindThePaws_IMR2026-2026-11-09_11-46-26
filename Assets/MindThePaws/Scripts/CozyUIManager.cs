@@ -32,8 +32,12 @@ namespace MindThePaws
         Transform hudRoot;
         Canvas hudCanvas, badgeCanvas, polaroidCanvas;
         Text debugText;
+        RectTransform debugRoot;
         bool hiddenForSafety;
         public bool DebugVisible { get; set; }
+        /// Punctul unde stă cursorul razei (sau null). Panourile din fața lui devin aproape transparente,
+        /// ca să vezi mereu unde plasezi comoara / lăbuța.
+        public Vector3? AimPoint { get; set; }
 
         static readonly Vector2 HudSize = new Vector2(1500f, 980f);
 
@@ -77,9 +81,15 @@ namespace MindThePaws
             hudRoot.gameObject.SetActive(false);   // nimic nu plutește în origine până nu găsim camera
             bgo.SetActive(false);
 
-            var drt = CozyUI.Rect("Debug", hrt, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-30f, 20f), new Vector2(560f, 200f));
-            debugText = CozyUI.Txt("DebugText", drt, "", 17, new Color(1f, 1f, 0.85f, 0.75f), TextAnchor.LowerRight);
-            CozyUI.Stretch(debugText.rectTransform, 0f);
+            // debug: înainte era un text mic în colțul dreapta-jos (la marginea lentilelor, aproape invizibil în cască);
+            // acum e un panou închis la culoare, sus-centru, cu text mai mare
+            debugRoot = CozyUI.Rect("Debug", hrt, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(0f, 250f), new Vector2(1150f, 240f));
+            var dbg = CozyUI.Img("DebugBg", debugRoot, CozyUI.Rounded, new Color(0.08f, 0.06f, 0.12f, 0.78f), true);
+            CozyUI.Stretch(dbg.rectTransform, 0f);
+            debugText = CozyUI.Txt("DebugText", debugRoot, "", 22, new Color(1f, 1f, 0.9f, 1f), TextAnchor.MiddleLeft);
+            CozyUI.Stretch(debugText.rectTransform, 18f);
+            debugText.horizontalOverflow = HorizontalWrapMode.Wrap;
+            debugRoot.gameObject.SetActive(false);
             debugText.gameObject.AddComponent<Outline>().effectColor = new Color(0f, 0f, 0f, 0.5f);
             SetMood(CozyMood.Calm);
         }
@@ -91,7 +101,7 @@ namespace MindThePaws
 
         public void SetDebug(string text)
         {
-            debugText.gameObject.SetActive(DebugVisible && !string.IsNullOrEmpty(text));
+            debugRoot.gameObject.SetActive(DebugVisible && !string.IsNullOrEmpty(text));
             if (DebugVisible) debugText.text = text;
         }
 
@@ -133,13 +143,125 @@ namespace MindThePaws
                 polaroidCanvas.gameObject.SetActive(true);
             }
             float dt = Time.unscaledDeltaTime;
-            Badge.Place((RectTransform)badgeCanvas.transform, UnityEngine.XR.XRSettings.isDeviceActive);
+            bool xr = UnityEngine.XR.XRSettings.isDeviceActive;
+            if (xr && !badgeWorld) MakeBadgeWorld();
+            if (badgeWorld) TickBadgeWorld(dt);
+            if (xr && !polaroidWorld) MakePolaroidWorld();
+            if (polaroidWorld) TickPolaroidWorld(dt);
+            else Badge.Place((RectTransform)badgeCanvas.transform, xr);
             Badge.Tick(dt);
-            Inventory.Tick(dt);
-            Dialog.Tick(head, lumi, dt, Overlay.Active || hiddenForSafety);
+            Inventory.Tick(head, AimPoint, dt);
+            Dialog.Tick(head, lumi, dt, Overlay.Active || hiddenForSafety, AimPoint);
             Overlay.Tick(head, dt);
             Calibration.Tick(head, dt);
             Polaroid.Tick(dt);
+        }
+
+        // ------------------------------------------------------------ ecusonul în cască
+        // Înainte: Screen Space - Camera, lipit de colțul ecranului → la marginea lentilelor (neclar) și „fugea” cu fiecare
+        // mișcare a capului. Acum: panou în lume, sus-centru, care stă pe loc și se recentrează doar când iese din privire.
+        [Tooltip("În cască: unde stă ecusonul (timer, rundă, nivel) față de privire: x = stânga/dreapta, y = sus, z = distanță.")]
+        public Vector3 badgeOffset = new Vector3(0f, 0.25f, 1.05f);
+        public float badgeWorldScale = 1.1f;
+        bool badgeWorld, badgeSnap, badgeRecenter;
+
+        void MakeBadgeWorld()
+        {
+            badgeWorld = true;
+            badgeSnap = true;
+            var rt = (RectTransform)badgeCanvas.transform;
+            rt.SetParent(null, false);
+            badgeCanvas.renderMode = RenderMode.WorldSpace;
+            var sc = badgeCanvas.GetComponent<CanvasScaler>();
+            if (sc != null)
+            {
+                sc.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+                sc.dynamicPixelsPerUnit = CozyUI.TextDpu;
+                sc.referencePixelsPerUnit = 100f;
+            }
+            rt.sizeDelta = new Vector2(900f, 260f);
+            rt.localScale = Vector3.one * CozyUI.PX * badgeWorldScale;
+            Badge.PlaceCentered();
+        }
+
+        // Polaroidul de final: înainte era pe ecran, în dreapta și înclinat (-3° ± legănare) → greu de citit.
+        // În cască: panou în lume, drept, centrat în fața jucătorului la ~1 m, cu urmărire leneșă.
+        public float polaroidDistance = 1.0f;
+        bool polaroidWorld, polaroidSnap = true, polaroidRecenter, polaroidWasActive;
+
+        void MakePolaroidWorld()
+        {
+            polaroidWorld = true;
+            var rt = (RectTransform)polaroidCanvas.transform;
+            rt.SetParent(null, false);
+            polaroidCanvas.renderMode = RenderMode.WorldSpace;
+            var sc = polaroidCanvas.GetComponent<CanvasScaler>();
+            if (sc != null)
+            {
+                sc.uiScaleMode = CanvasScaler.ScaleMode.ConstantPixelSize;
+                sc.dynamicPixelsPerUnit = CozyUI.TextDpu;
+                sc.referencePixelsPerUnit = 100f;
+            }
+            rt.sizeDelta = new Vector2(900f, 1150f);
+            rt.localScale = Vector3.one * CozyUI.PX;
+            Polaroid.WorldMode = true;
+        }
+
+        void TickPolaroidWorld(float dt)
+        {
+            bool active = Polaroid.Active;
+            if (active && !polaroidWasActive) polaroidSnap = true;
+            polaroidWasActive = active;
+            if (!active && !polaroidSnap) return;
+            var rt = polaroidCanvas.transform;
+            var e = head.eulerAngles;
+            float pitch = Mathf.Clamp(Mathf.DeltaAngle(0f, e.x), -20f, 25f);
+            var target = head.position + Quaternion.Euler(pitch, e.y, 0f) * new Vector3(0f, -0.03f, polaroidDistance);
+            if (polaroidSnap)
+            {
+                rt.position = target;
+                polaroidSnap = false;
+            }
+            else
+            {
+                var toP = rt.position - head.position;
+                var toT = target - head.position;
+                if (Vector3.Angle(toP, toT) > 20f) polaroidRecenter = true;
+                if (polaroidRecenter)
+                {
+                    rt.position = Vector3.Lerp(rt.position, target, 1f - Mathf.Exp(-3.5f * dt));
+                    if ((rt.position - target).sqrMagnitude < 0.0004f) polaroidRecenter = false;
+                }
+            }
+            var d = rt.position - head.position;
+            if (d.sqrMagnitude > 1e-6f) rt.rotation = Quaternion.LookRotation(d.normalized, Vector3.up);
+        }
+
+        void TickBadgeWorld(float dt)
+        {
+            var rt = badgeCanvas.transform;
+            var e = head.eulerAngles;
+            float pitch = Mathf.Clamp(Mathf.DeltaAngle(0f, e.x), -30f, 40f);
+            var frame = Quaternion.Euler(pitch, e.y, 0f);
+            var target = head.position + frame * badgeOffset;
+            if (badgeSnap)
+            {
+                rt.position = target;
+                badgeSnap = false;
+            }
+            else
+            {
+                var toB = rt.position - head.position;
+                var toT = target - head.position;
+                if (Vector3.Angle(toB, toT) > 16f || Mathf.Abs(toB.magnitude - toT.magnitude) > 0.3f) badgeRecenter = true;
+                if (badgeRecenter)
+                {
+                    rt.position = Vector3.Lerp(rt.position, target, 1f - Mathf.Exp(-4f * dt));
+                    if ((rt.position - target).sqrMagnitude < 0.0004f) badgeRecenter = false;
+                }
+            }
+            var d = rt.position - head.position;
+            if (d.sqrMagnitude > 1e-6f) rt.rotation = Quaternion.LookRotation(d.normalized, Vector3.up);
         }
 
         void OnDestroy()
@@ -162,8 +284,13 @@ namespace MindThePaws
         readonly Text title, sub, timer;
         readonly RectTransform chip;
         readonly CozyUI.Panel chipPanel;
+        readonly RectTransform heartChip;
+        readonly RectTransform heartIcon;
+        readonly Text heartText;
         float timeLeft = -1f;
         float pulse;
+        int heartBpm = -1;
+        float beatPhase;
 
         public HudBadge(RectTransform canvas)
         {
@@ -204,6 +331,27 @@ namespace MindThePaws
             timer = CozyUI.Txt("Timer", chip, "", 28, CozyUI.Ink, TextAnchor.MiddleCenter, FontStyle.Bold);
             CozyUI.Stretch(timer.rectTransform, 0f);
             chip.gameObject.SetActive(false);
+
+            // pastila roz cu pulsul live: inimioară care bate în ritmul BPM-ului + cifra
+            heartChip = CozyUI.Rect("HeartChip", root, Vector2.zero, Vector2.zero, Vector2.zero, new Vector2(150f, 56f));
+            var hle = heartChip.gameObject.AddComponent<LayoutElement>();
+            hle.preferredWidth = 150f;
+            hle.preferredHeight = 54f;
+            CozyUI.MakePill(heartChip, CozyThemeArt.PinkPill, 0.8f);
+            var hrow = CozyUI.Rect("Row", heartChip, Vector2.zero, Vector2.zero, Vector2.zero, Vector2.zero);
+            CozyUI.Stretch(hrow, 0f);
+            var hl = hrow.gameObject.AddComponent<HorizontalLayoutGroup>();
+            hl.padding = new RectOffset(14, 16, 6, 6);
+            hl.spacing = 6f;
+            hl.childAlignment = TextAnchor.MiddleCenter;
+            hl.childControlWidth = true;
+            hl.childControlHeight = true;
+            hl.childForceExpandWidth = false;
+            hl.childForceExpandHeight = false;
+            heartIcon = CozyUI.Icon("Heart", hrow, CozyThemeArt.HeartIcon, 34f).rectTransform;
+            heartText = CozyUI.Txt("Bpm", hrow, "", 26, CozyUI.Ink, TextAnchor.MiddleLeft, FontStyle.Bold);
+            heartText.horizontalOverflow = HorizontalWrapMode.Overflow;
+            heartChip.gameObject.SetActive(false);
         }
 
         /// Margine mică în Editor; în cască, colțurile ecranului sunt în afara lentilelor, așa că păstrăm
@@ -213,6 +361,13 @@ namespace MindThePaws
             var size = canvas.rect.size;
             var pos = xr ? new Vector2(size.x * 0.2f, -size.y * 0.22f) : new Vector2(24f, -24f);
             if ((root.anchoredPosition - pos).sqrMagnitude > 0.25f) root.anchoredPosition = pos;
+        }
+
+        /// Pentru ecusonul din lume (cască): centrat pe canvas.
+        public void PlaceCentered()
+        {
+            root.anchorMin = root.anchorMax = root.pivot = new Vector2(0.5f, 0.5f);
+            root.anchoredPosition = Vector2.zero;
         }
 
         public void SetMood(CozyMood m)
@@ -238,8 +393,27 @@ namespace MindThePaws
             }
         }
 
+        /// Pulsul live de la senzor (≤ 0 = ascunde pastila).
+        public void SetHeart(int bpm)
+        {
+            heartBpm = bpm;
+            bool on = bpm > 0;
+            if (heartChip.gameObject.activeSelf != on) heartChip.gameObject.SetActive(on);
+            if (!on) return;
+            string t = bpm + " BPM";
+            if (heartText.text != t) heartText.text = t;
+        }
+
         public void Tick(float dt)
         {
+            if (heartBpm > 0)
+            {
+                // bătaie dublă (lub-dub) în ritmul pulsului real
+                beatPhase += dt * heartBpm / 60f;
+                float ph = beatPhase - Mathf.Floor(beatPhase);
+                float beat = Mathf.Exp(-Mathf.Pow((ph - 0.05f) / 0.05f, 2f)) + 0.6f * Mathf.Exp(-Mathf.Pow((ph - 0.25f) / 0.05f, 2f));
+                heartIcon.localScale = Vector3.one * (1f + 0.18f * beat);
+            }
             if (timeLeft < 0f) return;
             // în ultimele 10 secunde, pastila pulsează ușor în roz
             if (timeLeft <= 10f)
@@ -261,7 +435,8 @@ namespace MindThePaws
         readonly Slot[] slots = new Slot[3];
         string[] ids = new string[0];
         bool visible, suspended;
-        float t;
+        float t, fade = 1f;
+        readonly CanvasGroup group;
 
         sealed class Slot
         {
@@ -273,7 +448,12 @@ namespace MindThePaws
 
         public TreasureInventoryUI(RectTransform hud)
         {
-            root = CozyUI.Rect("TreasureInventory", hud, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, 46f), new Vector2(840f, 290f));
+            // mai mic și mai jos decât înainte (stătea fix în zona în care țintești masa / podeaua)
+            root = CozyUI.Rect("TreasureInventory", hud, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(0f, -150f), new Vector2(840f, 290f));
+            root.localScale = Vector3.one * 0.72f;
+            group = root.gameObject.AddComponent<CanvasGroup>();
+            group.blocksRaycasts = false;
+            group.interactable = false;
             var shadow = CozyUI.Img("Shadow", root, CozyUI.Shadow, new Color(0.3f, 0.18f, 0.2f, 0.32f), true);
             CozyUI.Stretch(shadow.rectTransform, -26f);
             shadow.rectTransform.anchoredPosition = new Vector2(0f, -9f);
@@ -383,10 +563,14 @@ namespace MindThePaws
             Apply();
         }
 
-        public void Tick(float dt)
+        public void Tick(Transform head, Vector3? aim, float dt)
         {
             if (!visible || suspended) return;
             t += dt;
+            // dacă cursorul razei e „în spatele” tăviței, o facem aproape transparentă
+            bool behind = head != null && aim.HasValue && CozyUI.Occludes(root, head.position, aim.Value, 60f);
+            fade = Mathf.MoveTowards(fade, behind ? 0.12f : 1f, dt * 6f);
+            group.alpha = fade;
             for (int i = 0; i < slots.Length; i++)
             {
                 var s = slots[i];
@@ -418,7 +602,7 @@ namespace MindThePaws
         readonly Text nameText, body;
         readonly List<DialogButton> buttons = new List<DialogButton>();
         bool suspended;
-        float alpha, pop, buttonsShownAt;
+        float alpha, pop, buttonsShownAt, seeThrough;
         string current = "";
         BoxCollider rootHitbox;
         Image nameIcon;
@@ -453,6 +637,11 @@ namespace MindThePaws
         public Vector3? AnchorPoint;
 
         public int Chosen { get; private set; } = -1;
+        /// Când s-a schimbat ultima oară replica (pentru „Lumi vine în față doar când are ceva nou de spus”).
+        public float ChangedAt { get; private set; } = -100f;
+        /// Lumi e „deoparte”: cardul e mai mic și puțin mai transparent.
+        public bool Docked;
+        float dockT;
         public bool Hovering { get; private set; }
         public Vector3 HoverPoint { get; private set; }
         public bool Visible => alpha > 0.9f && canvas.gameObject.activeSelf;
@@ -535,7 +724,7 @@ namespace MindThePaws
             if (nameText.text != title) nameText.text = title;
             text = text ?? "";
             if (text == current) return;
-            if (StripTags(text) != StripTags(current)) pop = 1f;
+            if (StripTags(text) != StripTags(current)) { pop = 1f; ChangedAt = Time.unscaledTime; }
             current = text;
             body.text = CozyUI.FixSize(text, body.fontSize);
         }
@@ -589,17 +778,19 @@ namespace MindThePaws
             Hovering = false;
             if (!HasButtons) return -1;
             int hit = -1;
+            Vector3 hitPoint = default;
             for (int i = 0; i < buttons.Count; i++)
             {
                 var b = buttons[i];
                 if (b == null || b.rt == null) continue;
-                if (CozyUI.RayHitsUI(b.rt, b.hitbox, ray, out _, 8f)) { hit = i; break; }
+                if (CozyUI.RayHitsUI(b.rt, b.hitbox, ray, out hitPoint, 8f)) { hit = i; break; }
             }
-            bool onCard = hit >= 0 || CozyUI.RayHitsUI(root, rootHitbox, ray, out _);
+            bool onCard = hit >= 0 || CozyUI.RayHitsUI(root, rootHitbox, ray, out hitPoint);
             if (onCard)
             {
                 Hovering = true;
-                HoverPoint = hit >= 0 ? buttons[hit].rt.position : root.position;
+                // punctul real de pe card: înainte cursorul „sărea” în centrul butonului / la baza cardului
+                HoverPoint = hitPoint;
             }
             for (int i = 0; i < buttons.Count; i++)
                 buttons[i].hover = Mathf.MoveTowards(buttons[i].hover, i == hit ? 1f : 0f, Time.unscaledDeltaTime * 8f);
@@ -617,14 +808,18 @@ namespace MindThePaws
             return true;
         }
 
-        public void Tick(Transform head, Transform lumi, float dt, bool hidden)
+        public void Tick(Transform head, Transform lumi, float dt, bool hidden, Vector3? aim = null)
         {
             bool want = !hidden && !suspended && !string.IsNullOrEmpty(current);
             alpha = Mathf.MoveTowards(alpha, want ? 1f : 0f, dt * 5f);
             bool on = alpha > 0.01f;
             if (canvas.gameObject.activeSelf != on) canvas.gameObject.SetActive(on);
             if (!on) return;
-            group.alpha = alpha;
+            // fără butoane, cardul nu trebuie să ascundă locul în care țintești
+            bool behind = buttons.Count == 0 && head != null && aim.HasValue && CozyUI.Occludes(root, head.position, aim.Value, 40f);
+            seeThrough = Mathf.MoveTowards(seeThrough, behind ? 0.8f : 0f, dt * 6f);
+            dockT = Mathf.MoveTowards(dockT, Docked && buttons.Count == 0 ? 1f : 0f, dt * 2.5f);
+            group.alpha = alpha * (1f - seeThrough) * Mathf.Lerp(1f, 0.8f, dockT);
             pop = Mathf.MoveTowards(pop, 0f, dt * 4f);
 
             for (int i = 0; i < buttons.Count; i++)
@@ -638,12 +833,12 @@ namespace MindThePaws
             bool lumiOn = lumi != null && lumi.gameObject.activeInHierarchy;
             Vector3 pos;
             float scale = 1f;
-            Vector3 up = head.up;
+            Vector3 up = Vector3.up;   // înainte head.up: cardul se înclina odată cu capul
             var pivot = new Vector2(0.5f, 0f);
             if (Anchored && AnchorPoint.HasValue)
             {
                 pos = AnchorPoint.Value;
-                pivot = new Vector2(1f, 0f);
+                pivot = new Vector2(0.5f, 0f);   // centrat deasupra grădinii (înainte creștea spre stânga, departe de privire)
                 scale = anchoredScale;
                 up = Vector3.up;
             }
@@ -653,12 +848,21 @@ namespace MindThePaws
                 scale = anchoredScale;
                 up = Vector3.up;
             }
-            else if (lumiOn) pos = lumi.position + head.up * 0.12f + head.right * 0.09f;
-            else pos = head.TransformPoint(new Vector3(-0.26f, -0.12f, 0.95f));
+            else if (lumiOn)
+            {
+                // cardul stă în dreapta lui Lumi, aproape de centrul privirii; axa „dreapta” e luată față de Lumi,
+                // nu față de cap, ca să nu se miște cardul la fiecare rotire mică a capului
+                var toLumi = lumi.position - head.position;
+                toLumi.y = 0f;
+                var right = toLumi.sqrMagnitude > 1e-4f ? Vector3.Cross(Vector3.up, toLumi.normalized) : head.right;
+                pos = lumi.position + Vector3.up * 0.11f + right * 0.2f;
+            }
+            else pos = head.TransformPoint(new Vector3(0f, -0.12f, 0.95f));
             if (root.pivot != pivot) root.pivot = pivot;
             root.position = pos;
             var d = pos - head.position;
             if (d.sqrMagnitude > 1e-6f) root.rotation = Quaternion.LookRotation(d.normalized, up);
+            scale *= Mathf.Lerp(1f, 0.72f, dockT);
             root.localScale = Vector3.one * CozyUI.PX * scale * (1f + 0.05f * Mathf.Sin(pop * Mathf.PI));
         }
 
@@ -779,7 +983,7 @@ namespace MindThePaws
             if (onCard)
             {
                 Hovering = true;
-                HoverPoint = onButton ? button.position : p;
+                HoverPoint = p;   // punctul real (nu centrul butonului)
             }
             hoverT = Mathf.MoveTowards(hoverT, onButton ? 1f : 0f, Time.unscaledDeltaTime * 8f);
             if (click && Continue()) return true;
@@ -958,6 +1162,8 @@ namespace MindThePaws
         /// Poziția pe ecran (unități de canvas, referință 1600×900) și scara cardului.
         public Vector2 screenOffset = new Vector2(150f, 40f);
         public float screenScale = 0.56f;
+        /// În cască: polaroidul e un panou în lume, drept și centrat (fără înclinare).
+        public bool WorldMode;
 
         public PolaroidCard(RectTransform screenCanvas)
         {
@@ -1072,7 +1278,7 @@ namespace MindThePaws
             hoverT = Mathf.MoveTowards(hoverT, onButton ? 1f : 0f, Time.unscaledDeltaTime * 8f);
             if (!onCard) return false;
             Hovering = true;
-            HoverPoint = onButton ? button.position : p;
+            HoverPoint = p;   // punctul real (nu centrul butonului)
             if (click && onButton) Press();
             return true;
         }
@@ -1096,9 +1302,18 @@ namespace MindThePaws
             float t = Time.unscaledTime - shownAt;
             float pop = active ? Mathf.Clamp01(t / 0.5f) : alpha;
             float s = Mathf.Lerp(0.75f, 1f, 1f - (1f - pop) * (1f - pop)) * (1f + 0.04f * Mathf.Sin(Mathf.Clamp01(t / 0.9f) * Mathf.PI));
-            root.anchoredPosition = screenOffset;
-            root.localScale = Vector3.one * screenScale * s;
-            root.localRotation = Quaternion.Euler(0f, 0f, -3f + Mathf.Sin(Time.unscaledTime * 0.9f) * 1.2f);
+            if (WorldMode)
+            {
+                root.anchoredPosition = Vector2.zero;
+                root.localScale = Vector3.one * s;
+                root.localRotation = Quaternion.identity;   // drept: se citește mult mai ușor
+            }
+            else
+            {
+                root.anchoredPosition = screenOffset;
+                root.localScale = Vector3.one * screenScale * s;
+                root.localRotation = Quaternion.Euler(0f, 0f, -3f + Mathf.Sin(Time.unscaledTime * 0.9f) * 1.2f);
+            }
             var bc = Color.Lerp(CozyThemeArt.Turquoise, Color.Lerp(CozyThemeArt.Turquoise, Color.white, 0.45f), hoverT);
             buttonPanel.SetColors(bc, Color.clear);
             button.localScale = Vector3.one * (1f + 0.05f * hoverT);

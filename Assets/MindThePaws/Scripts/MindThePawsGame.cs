@@ -113,6 +113,12 @@ namespace MindThePaws
         MemoryTaskKind memTaskKind;
         bool memTaskSwitch;
         AudioDirector audioDir;
+        HeartRateMonitor hrm;
+        bool firstSessionStarted;
+        // pulsul pe etape: un singur rând per etapă (medie / min / max), nu unul la 2 secunde
+        string hrPhaseKey = "", hrPhaseName = "";
+        int hrPhaseRound, hrN, hrFirst, hrLast;
+        float hrSum, hrMin, hrMax, hrPhaseStart, nextHrSample;
         AtmosphereController atmosphere;
         CozyUIManager ui;
         CozyMood mood = CozyMood.Calm;
@@ -276,6 +282,9 @@ namespace MindThePaws
             if (atmosphere == null) atmosphere = gameObject.AddComponent<AtmosphereController>();
             ui = GetComponent<CozyUIManager>();
             if (ui == null) ui = gameObject.AddComponent<CozyUIManager>();
+            // pulsul real de la senzorul Bluetooth (dacă există); altfel rămâne cel simulat
+            hrm = GetComponent<HeartRateMonitor>();
+            if (hrm == null) hrm = gameObject.AddComponent<HeartRateMonitor>();
             ui.DebugVisible = debugOverlay;
 
             pawGhost = Graybox.Paw("PawGhost", new Color(0.85f, 0.72f, 0.62f));
@@ -327,11 +336,61 @@ namespace MindThePaws
                 Debug.LogException(e);
             }
 
+            Safe(LogHeartRate);
             Safe(UpdateLumi);
             Safe(UpdateHud);
             Safe(UpdateTutorialFx);
             Safe(UpdateGarden);
         }
+
+        /// Pulsul real (doar de la senzor): eșantionat o dată pe secundă, dar scris în mindthepaws_events.csv
+        /// O SINGURĂ DATĂ PE ETAPĂ (când se schimbă etapa): medie, minim, maxim, puls la început / final, durată.
+        void LogHeartRate()
+        {
+            ui.Badge.SetHeart(hrm != null && hrm.HasData ? hrm.Bpm : -1);
+            string phase = safety.Running ? "SafetyBlanket" : state.ToString();
+            string key = phase + "|" + round;
+            if (key != hrPhaseKey)
+            {
+                FlushHeartPhase();
+                hrPhaseKey = key;
+                hrPhaseName = phase;
+                hrPhaseRound = round;
+                hrPhaseStart = Time.unscaledTime;
+                hrN = 0;
+                hrSum = 0f;
+                hrMin = float.MaxValue;
+                hrMax = 0f;
+                nextHrSample = 0f;
+            }
+            if (hrm == null || !hrm.HasData || Time.unscaledTime < nextHrSample) return;
+            nextHrSample = Time.unscaledTime + 1f;
+            int b = hrm.Bpm;
+            if (hrN == 0) hrFirst = b;
+            hrLast = b;
+            hrN++;
+            hrSum += b;
+            hrMin = Mathf.Min(hrMin, b);
+            hrMax = Mathf.Max(hrMax, b);
+        }
+
+        void FlushHeartPhase()
+        {
+            if (hrN == 0 || string.IsNullOrEmpty(hrPhaseName) || logger == null) return;
+            float mean = hrSum / hrN;
+            float baseBpm = logger.BaselineBpm;
+            string delta = float.IsNaN(baseBpm) ? "" : (mean - baseBpm).ToString("+0.0;-0.0", System.Globalization.CultureInfo.InvariantCulture);
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            logger.LogEvent("hr_phase",
+                $"phase={hrPhaseName};round={hrPhaseRound};chaos={(hrPhaseRound > 0 && ChaosFor(hrPhaseRound) ? 1 : 0)};" +
+                $"mean={mean.ToString("0.0", inv)};min={hrMin:0};max={hrMax:0};start={hrFirst};end={hrLast};" +
+                $"duration_s={(Time.unscaledTime - hrPhaseStart).ToString("0.0", inv)};delta_vs_baseline={delta}");
+            hrN = 0;
+            hrPhaseStart = Time.unscaledTime;   // dacă etapa continuă (ex. după pauza căștii), restul ei e un rând nou
+        }
+
+        void OnApplicationPause(bool paused) { if (paused) FlushHeartPhase(); }
+        void OnApplicationQuit() { FlushHeartPhase(); }
 
         void Safe(System.Action a)
         {
@@ -345,6 +404,7 @@ namespace MindThePaws
 
         void DrawAim(bool show, Ray ray, Vector3 end, bool ok)
         {
+            ui.AimPoint = show ? end : (Vector3?)null;   // panourile din fața cursorului devin transparente
             aimLine.enabled = show && !aimIsGaze;   // la privire, raza ar fi chiar în ochi → doar punct
             if (aimLine.enabled)
             {
@@ -362,6 +422,7 @@ namespace MindThePaws
 
         void Tick()
         {
+            ui.AimPoint = null;
             bool hasAim = GetAim(out Ray ray, out bool click);
 
             if (safety.Running)
@@ -491,7 +552,7 @@ namespace MindThePaws
                 cupHolding = hit && holdNow;
                 if (hit)
                 {
-                    end = c;
+                    end = MemoryTaskUtil.Soft(ray, c);
                     if (click) cupClicked = true;
                 }
             }
@@ -501,7 +562,7 @@ namespace MindThePaws
                 snootHover = hit;
                 if (hit)
                 {
-                    end = snootMarker.position;
+                    end = MemoryTaskUtil.Soft(ray, snootMarker.position);
                     if (click) snootBopped = true;
                 }
             }
@@ -517,7 +578,7 @@ namespace MindThePaws
                     {
                         hit = true;
                         petHover = true;
-                        end = pts[k];
+                        end = MemoryTaskUtil.Soft(ray, pts[k]);
                         if (click) petClicked = true;
                     }
                 }
@@ -527,11 +588,11 @@ namespace MindThePaws
             {
                 var tops = new Vector3[flowers.Length];
                 for (int i = 0; i < flowers.Length; i++) tops[i] = FlowerTop(i);
-                hoveredFlower = MemoryTaskUtil.Pick(ray, tops, 0.1f);
+                hoveredFlower = MemoryTaskUtil.PickSticky(ray, tops, 0.1f, hoveredFlower);
                 if (hoveredFlower >= 0)
                 {
                     hit = true;
-                    end = tops[hoveredFlower];
+                    end = MemoryTaskUtil.Soft(ray, tops[hoveredFlower]);
                     if (click) flowerPicked = hoveredFlower;
                 }
             }
@@ -615,7 +676,8 @@ namespace MindThePaws
                 string dbg = toastOn ? ">> " + toast : "";
                 if (debugOverlay)
                     dbg += $"\n{debugInfo}\nMRUK: {(room != null ? "da" : "nu")} · suprafață: {lastSurface} · adâncime: {depthStatus}\n" +
-                           $"stare: {state} · mini-joc: {memoryTaskMode} · {audioDir.Summary} · shader: {Graybox.ShaderInfo}";
+                           $"stare: {state} · mini-joc: {memoryTaskMode} · {audioDir.Summary} · shader: {Graybox.ShaderInfo}" +
+                           $"\n{audioDir.Diag}\npuls: {(hrm != null ? hrm.Status + (hrm.HasData ? " · " + hrm.Bpm + " BPM" : "") : "-")}";
                 ui.SetDebug(dbg.Trim());
             }
             else ui.SetDebug("");
@@ -646,7 +708,12 @@ namespace MindThePaws
             CleanupTutorial();
             safetyTriggered = false;
             chaosIntensity = 1f;
+            FlushHeartPhase();
+            hrPhaseKey = "";
             logger.ResetSession();
+            // „Sesiune nouă” = participant nou: ID și sesiune noi, puls de calm șters (înainte rămâneau ale celui dinainte)
+            if (firstSessionStarted) logger.StartNewSession();
+            firstSessionStarted = true;
             ui.Polaroid.Hide();
             noteUntil = 0f;
             for (int i = 0; i < errorsAll.Length; i++) errorsAll[i] = float.NaN;
@@ -1134,7 +1201,7 @@ namespace MindThePaws
             logger.LogTrial(round, i + 1, CurrentSet[i], ChaosThisRound ? "chaos" : "calm", hiddenSurface[i],
                 hiddenPos[i], guess, err, errH, angle,
                 Time.time - hideTime, Time.time - lastGuessMark,
-                dc, ds, safetyTriggered);
+                dc, ds, safetyTriggered, hrm != null && hrm.HasData ? hrm.Bpm : -1);
             lastGuessMark = Time.time;
             int ei = ErrIndex(round, i);
             if (ValidErr(ei)) errorsAll[ei] = err;
@@ -1258,7 +1325,7 @@ namespace MindThePaws
             bool skip = false;
 
             // ---- pasul 0: Lumi iese din ceainic
-            var table = TablePoint(1.1f);
+            var table = TablePoint(teaDistance);
             kettle = Graybox.Kettle("Kettle");
             kettle.transform.SetPositionAndRotation(table, YawTowardsHead(table));
             StartCoroutine(ScaleBounce(kettle.transform, 0f, 1f, 0.5f));
@@ -1348,15 +1415,24 @@ namespace MindThePaws
         }
 
         /// Un punct pe masă / suprafață la ~distance m în fața jucătorului (altfel planul virtual de sub cap).
+        [Header("Tutorial: ceainicul și ceașca")]
+        [Tooltip("Cât de departe stă ceainicul (m).")]
+        public float teaDistance = 0.8f;
+        [Tooltip("Cel mai jos (sub ochi) unde acceptăm o masă reală. Mai jos de atât (ex. podeaua) ceainicul plutește magic.")]
+        public float teaMaxDrop = 0.75f;
+        [Tooltip("Dacă nu e o masă potrivită: cât sub ochi plutește ceainicul (m).")]
+        public float teaFloatDrop = 0.42f;
+
+        /// Înainte: raza în jos putea nimeri podeaua (acceptam până la 1.4 m sub ochi) → ceașca stătea pe jos.
         Vector3 TablePoint(float distance)
         {
             var f = head.forward; f.y = 0f;
             if (f.sqrMagnitude < 0.01f) f = Vector3.forward;
             f.Normalize();
             var above = head.position + f * distance + Vector3.up * 0.2f;
-            if (TryHitSurface(new Ray(above, Vector3.down), out Vector3 p, out _, out _) && p.y < head.position.y - 0.25f && p.y > head.position.y - 1.4f)
+            if (TryHitSurface(new Ray(above, Vector3.down), out Vector3 p, out _, out _) && p.y < head.position.y - 0.25f && p.y > head.position.y - teaMaxDrop)
                 return p;
-            return new Vector3(above.x, head.position.y - fallbackSurfaceBelowHead, above.z);
+            return new Vector3(above.x, head.position.y - teaFloatDrop, above.z);
         }
 
         IEnumerator LumiFromKettle()
@@ -1490,7 +1566,7 @@ namespace MindThePaws
                     else shown = Mathf.Lerp(shown, target + Mathf.Sin(Time.time * 1.3f) * 1.2f, 1f - Mathf.Exp(-1.2f * dt));
 
                     ui.Dialog.SetText("Ceai cu Lumi", "Bea încet... Așa! Ține ceașca în continuare.");
-                    ui.Calibration.Set(progress, shown, $"Se calibrează ritmul tău de calm... ({Mathf.RoundToInt(shown)} BPM)");
+                    ui.Calibration.Set(progress, shown, $"Se calibrează ritmul tău de calm... ({Mathf.RoundToInt(shown)} BPM{(live > 0f ? "" : " · simulat")})");
                 }
                 else
                 {
@@ -1510,8 +1586,9 @@ namespace MindThePaws
             cupActive = false;
             cupHolding = false;
             float bpm = n > 0 ? sum / n : Mathf.Round(shown);
-            logger.SetBaseline(bpm, n > 0 ? "external" : "simulated");
-            ui.Calibration.Set(1f, bpm, $"Gata! Ritmul tău de calm: {Mathf.RoundToInt(bpm)} BPM");
+            string hrSource = n > 0 ? "hrm_ble:" + (hrm != null ? hrm.Device : "") : "simulated";
+            logger.SetBaseline(bpm, hrSource);
+            ui.Calibration.Set(1f, bpm, $"Gata! Ritmul tău de calm: {Mathf.RoundToInt(bpm)} BPM{(n > 0 ? "" : " (simulat)")}");
             ui.Dialog.SetText("Ceai cu Lumi", "Mulțumesc! Acum știu cum arată liniștea ta. O să ne ajute mai târziu.");
             CozyFx.Hearts(widgetPos, 14, 0.04f);
             AudioDirector.Sfx("grow", widgetPos, 0.5f, 1.2f);
@@ -1733,6 +1810,7 @@ namespace MindThePaws
             yield return Ask("Lumi · 3/3 · Ce ajută în viața reală", Card3, "Mai departe");
 
             // ---- promisiunea empatică
+            if (jarLabel != null) jarLabel.gameObject.SetActive(true);
             ui.Dialog.Show("Lumi · Borcanul cu promisiuni", "Alege o promisiune și o punem împreună în borcanul cu stele:", Promises, false, CozyThemeArt.StarIcon, CozyThemeArt.StarIcon);
             while (ui.Dialog.Chosen < 0) yield return null;
             int choice = Mathf.Clamp(ui.Dialog.Chosen, 0, Promises.Length - 1);
@@ -1744,10 +1822,9 @@ namespace MindThePaws
             string date = System.DateTime.Now.ToString("dd.MM.yyyy");
             ui.Polaroid.Show("Mochi, Gogoașă și Fasolică îți mulțumesc!\n<size=40>„" + Promises[choice] + "”\nMind the Paws · " + date + "</size>", "Sesiune nouă");
             logger.LogEvent("polaroid", "shown");
-            ui.Dialog.Show("Mulțumim că ai jucat!",
-                "Uite! O poză cu haita, ca amintire de azi. Steluța ta strălucește în borcan, iar promisiunea ta rămâne lângă el.",
-                new[] { "Sesiune nouă" });
-            while (!ui.Polaroid.Done && ui.Dialog.Chosen < 0) yield return null;
+            // cardul lui Lumi ar sta exact în spatele polaroidului (și avea același buton) → îl ascundem
+            ui.Dialog.Clear();
+            while (!ui.Polaroid.Done) yield return null;
             yield return new WaitForSeconds(0.3f);
             ui.Polaroid.Hide();
             asking = false;
@@ -2149,7 +2226,7 @@ namespace MindThePaws
                 var board = Graybox.Prim(PrimitiveType.Cube, gt, new Vector3(0.5f, 0.22f, z), new Vector3(0.015f, 0.1f, 0.22f), CozyThemeArt.WoodMat(new Color(1f, 0.93f, 0.86f), 1f));
                 board.name = "SignBoard";
                 string meanTxt = n > 0 ? (sum / n * 100f).ToString("0") + " cm" : "fără date";
-                var sign = CozyUI.Label("RowSign_" + r, RowTitle(r) + "\n<size=44>" + meanTxt + " eroare medie</size>", 26, CozyUI.Ink, Color.Lerp(Color.white, cols[0], 0.25f), cols[0]);
+                var sign = CozyUI.Label("RowSign_" + r, RowTitle(r) + "\n<size=40>" + meanTxt + " eroare medie</size>", 19, CozyUI.Ink, Color.Lerp(Color.white, cols[0], 0.25f), cols[0]);
                 sign.transform.SetParent(gt, false);
                 sign.transform.localPosition = new Vector3(0.5f, 0.3f, z);
                 sign.faceTarget = head;
@@ -2195,6 +2272,7 @@ namespace MindThePaws
             jarLabel.transform.SetParent(gt, false);
             jarLabel.transform.position = jarHomePos + Vector3.up * (jarHeight + 0.09f);
             jarLabel.faceTarget = head;
+            jarLabel.gameObject.SetActive(false);   // apare abia la pasul cu borcanul (mai puțin clutter în turul florilor)
 
             // Lumi la nivelul pieptului, ~1.25 m în stânga centrului grădinii. Cardul ei are marginea dreaptă
             // la ≥ 0.45 m în stânga marginii grădinii (raza ~0.66 m) și crește spre stânga, niciodată spre flori.
@@ -2203,11 +2281,15 @@ namespace MindThePaws
             lumi.transform.localScale = Vector3.one * 1.5f;
             var side = Vector3.Cross(Vector3.up, f);      // dreapta jucătorului
             float chestY = head.position.y - 0.35f;
-            lumi.transform.position = new Vector3(center.x, chestY, center.z) - side * 1.25f;
-            lumi.transform.rotation = YawTowardsHead(lumi.transform.position);
-            const float gardenHalfWidth = 0.66f;
-            ui.Dialog.AnchorPoint = new Vector3(center.x, chestY + 0.2f, center.z) - side * (gardenHalfWidth + 0.47f);
+            // cardul: centrat deasupra marginii din spate a grădinii, puțin sub nivelul ochilor → îl citești privind
+            // drept înainte, iar florile (jos) rămân libere. Lumi stă lângă marginea stângă a cardului, nu peste el.
+            var cardBase = new Vector3(center.x, head.position.y - 0.16f, center.z) + f * 0.4f;
+            ui.Dialog.anchoredScale = 1.55f;
+            ui.Dialog.AnchorPoint = cardBase;
             ui.Dialog.Anchored = true;
+            float cardHalf = 600f * CozyUI.PX * ui.Dialog.anchoredScale * 0.5f;
+            lumi.transform.position = cardBase - side * (cardHalf + 0.16f) + Vector3.up * 0.06f;
+            lumi.transform.rotation = YawTowardsHead(lumi.transform.position);
         }
 
         IEnumerator Grow(Transform t, float delay)
@@ -2269,30 +2351,133 @@ namespace MindThePaws
             var e = head.eulerAngles;
             float pitch = Mathf.Clamp(Mathf.DeltaAngle(0f, e.x), -25f, 35f);
             var frame = Quaternion.Euler(pitch, e.y, 0f);
-            return head.position + frame * new Vector3(-0.34f, -0.27f, 0.95f);
+            // în față (aproape de centru) când are ceva nou de spus; deoparte, jos-stânga, în rest
+            var focus = new Vector3(-0.2f, -0.25f, 0.95f);
+            var docked = new Vector3(-0.46f, -0.34f, 0.9f);
+            return head.position + frame * Vector3.Lerp(focus, docked, lumiDockT);
         }
+
+        [Header("Lumi")]
+        [Tooltip("Câte secunde stă Lumi în față după o replică nouă, în timpul jocului (apoi se dă deoparte).")]
+        public float lumiFocusSeconds = 4f;
+        float lumiDockT;
+
+        /// În timpul jocului propriu-zis Lumi se dă deoparte, dacă nu a spus ceva nou recent și nu are butoane.
+        void UpdateLumiDock()
+        {
+            bool gameplay = !safety.Running && (state == State.Hide || state == State.Memorize || state == State.Distract ||
+                                                state == State.Guess || state == State.Poof);
+            bool fresh = Time.unscaledTime - ui.Dialog.ChangedAt < lumiFocusSeconds;
+            bool dock = gameplay && !fresh && !ui.Dialog.HasButtons;
+            ui.Dialog.Docked = dock;
+            lumiDockT = Mathf.MoveTowards(lumiDockT, dock ? 1f : 0f, Mathf.Min(Time.unscaledDeltaTime, 0.05f) * 1.5f);
+        }
+
+        bool lumiRecenter;
+
 
         void UpdateLumi()
         {
             if (lumi == null || head == null || !lumi.activeSelf || !lumiFollow) return;
+            UpdateLumiDock();
             var target = LumiHudTarget();
             float dt = Mathf.Min(Time.unscaledDeltaTime, 0.05f);
             if (lumiSnap || (lumi.transform.position - target).sqrMagnitude > 2.25f)
             {
                 lumi.transform.position = target;
                 lumiSnap = false;
+                lumiRecenter = false;
             }
-            else lumi.transform.position = Vector3.Lerp(lumi.transform.position, target, 1f - Mathf.Exp(-6f * dt));
+            else
+            {
+                // urmărire leneșă: Lumi (și cardul ei) stau pe loc la mișcări mici ale capului, ca textul să nu „fugă”
+                var toL = lumi.transform.position - head.position;
+                var toT = target - head.position;
+                if (Vector3.Angle(toL, toT) > 14f || Mathf.Abs(toL.magnitude - toT.magnitude) > 0.25f) lumiRecenter = true;
+                if (lumiRecenter)
+                {
+                    lumi.transform.position = Vector3.Lerp(lumi.transform.position, target, 1f - Mathf.Exp(-5f * dt));
+                    if ((lumi.transform.position - target).sqrMagnitude < 0.0004f) lumiRecenter = false;
+                }
+            }
             lumi.transform.rotation = YawTowardsHead(lumi.transform.position);
         }
 
         // ================================================================ input
 
+        // ---- netezirea razei: mâna tremură, iar la pinch pointer-ul „cade” puțin → comoara ajungea lângă locul țintit
+        enum AimKind { None, Hand, Controller, Mouse, Gaze }
+        [Header("Rază (netezire)")]
+        [Tooltip("Cât de mult netezim tremurul razei (mai mare = mai rapid, mai puțin neted).")]
+        public float aimSmoothing = 14f;
+        [Tooltip("La pinch folosim raza de acum X secunde (înainte să se miște mâna din cauza pinch-ului).")]
+        public float pinchLookback = 0.1f;
+        AimKind aimKind, lastAimKind;
+        bool handLowConfidence;
+        Ray smoothRay;
+        bool hasSmooth;
+        const int AimHist = 24;
+        readonly Ray[] aimHist = new Ray[AimHist];
+        readonly float[] aimHistT = new float[AimHist];
+        int aimHistHead, aimHistCount;
+
         bool GetAim(out Ray ray, out bool click)
+        {
+            bool ok = GetAimRaw(out Ray raw, out click);
+            if (!ok || aimKind == AimKind.Gaze || aimKind == AimKind.Mouse)
+            {
+                hasSmooth = false;
+                aimHistCount = 0;
+                lastAimKind = aimKind;
+                ray = raw;
+                return ok;
+            }
+            float now = Time.unscaledTime;
+            float dt = Mathf.Min(Time.unscaledDeltaTime, 0.05f);
+            if (!hasSmooth || aimKind != lastAimKind)
+            {
+                smoothRay = raw;
+                hasSmooth = true;
+                aimHistCount = 0;
+            }
+            else if (!(aimKind == AimKind.Hand && handLowConfidence))   // mână nesigură: păstrăm ultima rază bună
+            {
+                // netezire adaptivă: tremurul mic e filtrat, mișcările mari trec repede
+                float ang = Vector3.Angle(smoothRay.direction, raw.direction);
+                float speed = aimKind == AimKind.Controller ? aimSmoothing * 2f : aimSmoothing;
+                float k = 1f - Mathf.Exp(-(speed + ang * 6f) * dt);
+                var dir = Vector3.Slerp(smoothRay.direction, raw.direction, k).normalized;
+                var org = Vector3.Lerp(smoothRay.origin, raw.origin, 1f - Mathf.Exp(-30f * dt));
+                smoothRay = new Ray(org, dir);
+            }
+            lastAimKind = aimKind;
+
+            aimHist[aimHistHead] = smoothRay;
+            aimHistT[aimHistHead] = now;
+            aimHistHead = (aimHistHead + 1) % AimHist;
+            aimHistCount = Mathf.Min(aimHistCount + 1, AimHist);
+
+            ray = smoothRay;
+            // la pinch cu mâna: raza de dinaintea pinch-ului (degetele trag pointer-ul în jos când se strâng)
+            if (click && aimKind == AimKind.Hand && pinchLookback > 0f)
+            {
+                for (int i = 1; i <= aimHistCount; i++)
+                {
+                    int idx = (aimHistHead - i + AimHist) % AimHist;
+                    ray = aimHist[idx];
+                    if (now - aimHistT[idx] >= pinchLookback) break;
+                }
+            }
+            return true;
+        }
+
+        bool GetAimRaw(out Ray ray, out bool click)
         {
             ray = default;
             click = false;
             aimIsGaze = false;
+            aimKind = AimKind.None;
+            handLowConfidence = false;
 
             // caută mâinile periodic (building block-urile le pot crea după Start)
             if (Time.unscaledTime >= nextHandSearch)
@@ -2310,8 +2495,10 @@ namespace MindThePaws
             {
                 if (h == null || !h.IsTracked) continue;
                 tracked++;
+                // histerezis: pornește la 0.85, se oprește abia sub 0.6 → fără „dublu-click” când tremură degetele
+                float pinchThreshold = wasPinching ? 0.6f : 0.85f;
                 if (h.GetFingerIsPinching(OVRHand.HandFinger.Index) ||
-                    h.GetFingerPinchStrength(OVRHand.HandFinger.Index) > 0.85f)
+                    h.GetFingerPinchStrength(OVRHand.HandFinger.Index) > pinchThreshold)
                     pinchingNow = true;
                 if (best == null || IsRightHand(h)) best = h;
             }
@@ -2348,6 +2535,8 @@ namespace MindThePaws
                 // 1) mâna (dreapta dacă e urmărită)
                 if (best != null)
                 {
+                    aimKind = AimKind.Hand;
+                    handLowConfidence = !best.IsDataHighConfidence;
                     if (best.IsPointerPoseValid && best.PointerPose != null)
                     {
                         ray = new Ray(best.PointerPose.position, best.PointerPose.forward);
@@ -2367,6 +2556,7 @@ namespace MindThePaws
                 {
                     var t = cameraRig.rightControllerAnchor != null ? cameraRig.rightControllerAnchor : cameraRig.rightHandAnchor;
                     ray = new Ray(t.position, t.forward);
+                    aimKind = AimKind.Controller;
                     debugInfo = inputs + " · țintire: controller drept";
                     return true;
                 }
@@ -2376,6 +2566,7 @@ namespace MindThePaws
                     OVRInput.IsControllerConnected(OVRInput.Controller.RHand))
                 {
                     ray = ShoulderRay(cameraRig.rightHandAnchor.position, true);
+                    aimKind = AimKind.Hand;
                     debugInfo = inputs + " · țintire: ancoră mână dreaptă";
                     return true;
                 }
@@ -2386,6 +2577,7 @@ namespace MindThePaws
             if (!xrActive && Camera.main != null && Mouse.current != null)
             {
                 ray = Camera.main.ScreenPointToRay(Mouse.current.position.ReadValue());
+                aimKind = AimKind.Mouse;
                 debugInfo = inputs + " · țintire: mouse";
                 return true;
             }
@@ -2394,6 +2586,7 @@ namespace MindThePaws
             // 5) privirea — merge mereu: punctul din fața ochilor + pinch / buton
             ray = new Ray(head.position, head.forward);
             aimIsGaze = true;
+            aimKind = AimKind.Gaze;
             debugInfo = inputs + " · țintire: privire";
             return true;
         }

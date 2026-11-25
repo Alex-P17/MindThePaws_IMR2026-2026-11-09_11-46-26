@@ -11,7 +11,9 @@ namespace MindThePaws
     /// </summary>
     public static class CozyUI
     {
-        public const float PX = 0.0005f;   // 2 unități de canvas pe milimetru
+        public const float PX = 0.0005f;
+        /// Rezoluția de rasterizare a fontului pe canvasurile din lume (aproape de rezoluția reală din cască).
+        public const float TextDpu = 1.1f;   // 2 unități de canvas pe milimetru
 
         // ------------------------------------------------------------ paletă
         public static readonly Color Cream = new Color(1f, 0.975f, 0.93f, 0.95f);
@@ -141,9 +143,9 @@ namespace MindThePaws
 
         static Sprite MakeSprite(int size, int border, System.Func<float, float, float, float> alpha)
         {
-            var t = new Texture2D(size, size, TextureFormat.RGBA32, false);
+            var t = new Texture2D(size, size, TextureFormat.RGBA32, true);   // cu mipmap: margini fără sclipire de la distanță
             t.wrapMode = TextureWrapMode.Clamp;
-            t.filterMode = FilterMode.Bilinear;
+            t.filterMode = FilterMode.Trilinear;
             var px = new Color32[size * size];
             float off = border > 0 && size == 128 ? 22f : 0f;   // umbra are marginea transparentă
             for (int j = 0; j < size; j++)
@@ -153,7 +155,7 @@ namespace MindThePaws
                     px[j * size + i] = new Color32(255, 255, 255, (byte)Mathf.RoundToInt(Mathf.Clamp01(a) * 255f));
                 }
             t.SetPixels32(px);
-            t.Apply(false, true);
+            t.Apply(true, true);
             return Sprite.Create(t, new Rect(0, 0, size, size), new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect,
                 new Vector4(border, border, border, border));
         }
@@ -168,7 +170,9 @@ namespace MindThePaws
             c.renderMode = RenderMode.WorldSpace;
             c.sortingOrder = sortingOrder;
             var sc = go.AddComponent<CanvasScaler>();
-            sc.dynamicPixelsPerUnit = 2f;
+            // 1 (nu 2): fontul era rasterizat de ~3x mai mare decât apare în cască → micșorat fără mipmap = text care
+            // „sclipește” și obosește ochii
+            sc.dynamicPixelsPerUnit = TextDpu;
             sc.referencePixelsPerUnit = 100f;
             var rt = (RectTransform)go.transform;
             rt.sizeDelta = sizePx;
@@ -418,6 +422,22 @@ namespace MindThePaws
                 }
             }
             return RayHits(rt, ray, out point, marginPx);
+        }
+
+        /// True dacă panoul rt stă între ochi și punctul p (văzut prin panou, cu o margine în pixeli de canvas).
+        public static bool Occludes(RectTransform rt, Vector3 eye, Vector3 p, float marginPx = 0f)
+        {
+            if (rt == null || !rt.gameObject.activeInHierarchy) return false;
+            var dir = p - eye;
+            float dist = dir.magnitude;
+            if (dist < 1e-3f) return false;
+            var plane = new Plane(rt.forward, rt.position);
+            var r = new Ray(eye, dir / dist);
+            if (!plane.Raycast(r, out float d) || d <= 0f || d >= dist) return false;
+            var local = rt.InverseTransformPoint(r.GetPoint(d));
+            var rect = rt.rect;
+            rect.xMin -= marginPx; rect.yMin -= marginPx; rect.xMax += marginPx; rect.yMax += marginPx;
+            return rect.Contains(new Vector2(local.x, local.y));
         }
 
         /// UnityEngine.UI.Button suplimentar (merge doar dacă scena are EventSystem; altfel e inofensiv).

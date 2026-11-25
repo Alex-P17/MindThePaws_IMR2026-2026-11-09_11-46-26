@@ -62,6 +62,34 @@ namespace MindThePaws
             return Vector3.Dot(head.right, to) > 0f ? what + " e în dreapta" : what + " e în stânga";
         }
 
+        /// Unde desenăm cursorul când raza „prinde” o țintă: pe rază, în dreptul țintei, doar puțin atras spre ea.
+        /// Înainte cursorul sărea direct în centrul țintei → raza părea „lipicioasă” și te trăgea după ea.
+        public static Vector3 Soft(Ray ray, Vector3 target, float pull = 0.25f)
+        {
+            float t = Mathf.Max(0.05f, Vector3.Dot(target - ray.origin, ray.direction));
+            var onRay = ray.origin + ray.direction * t;
+            return Vector3.Lerp(onRay, target, pull);
+        }
+
+        /// Ca Pick, dar ținta deja aleasă rămâne aleasă până când alta e clar mai aproape (fără pâlpâit între ținte vecine).
+        public static int PickSticky(Ray ray, IList<Vector3> points, float radius, int current)
+        {
+            int best = Pick(ray, points, radius);
+            if (current < 0 || current >= points.Count || best == current) return best;
+            float dc = RayDist(ray, points[current]);
+            if (dc > radius * 1.1f) return best;
+            if (best < 0) return current;
+            return RayDist(ray, points[best]) < dc * 0.7f ? best : current;
+        }
+
+        static float RayDist(Ray ray, Vector3 p)
+        {
+            var oc = p - ray.origin;
+            float t = Vector3.Dot(oc, ray.direction);
+            if (t < 0.05f) return float.MaxValue;
+            return (oc - ray.direction * t).magnitude;
+        }
+
         /// Cel mai apropiat punct de rază (distanța perpendiculară) sub o rază de selecție.
         public static int Pick(Ray ray, IList<Vector3> points, float radius)
         {

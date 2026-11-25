@@ -282,7 +282,7 @@ namespace MindThePaws
             if (best >= 0)
             {
                 Hovering = true;
-                HoverPoint = buttons[best].transform.position;
+                HoverPoint = MemoryTaskUtil.Soft(ray, buttons[best].transform.position);   // fără „smuls” în centrul butonului
                 if (click && best < ChoiceOfButton.Length) choice = ChoiceOfButton[best];
             }
         }

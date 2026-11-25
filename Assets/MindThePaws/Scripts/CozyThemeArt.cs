@@ -502,11 +502,12 @@ namespace MindThePaws
 
             public Sprite ToSprite(Vector4 border)
             {
-                var t = new Texture2D(w, h, TextureFormat.RGBA32, false);
+                var t = new Texture2D(w, h, TextureFormat.RGBA32, true);   // mipmap: iconițe/pergament clare de la distanță
                 t.wrapMode = TextureWrapMode.Clamp;
-                t.filterMode = FilterMode.Bilinear;
+                t.filterMode = FilterMode.Trilinear;
+                t.anisoLevel = 2;
                 t.SetPixels(px);
-                t.Apply(false, true);
+                t.Apply(true, true);
                 return Sprite.Create(t, new Rect(0, 0, w, h), new Vector2(0.5f, 0.5f), 100f, 0, SpriteMeshType.FullRect, border);
             }
         }

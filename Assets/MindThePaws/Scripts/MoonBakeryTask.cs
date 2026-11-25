@@ -618,6 +618,7 @@ namespace MindThePaws
         public void Feed(Ray ray, bool click)
         {
             Hovering = false;
+            int prevHover = hovered;
             hovered = -1;
             if (Finished || root == null || !root.activeSelf) return;
 
@@ -628,19 +629,19 @@ namespace MindThePaws
                 if (onPortal)
                 {
                     Hovering = true;
-                    HoverPoint = portalPos;
+                    HoverPoint = MemoryTaskUtil.Soft(ray, portalPos);
                     if (click) StartCoroutine(Enter());
                 }
                 return;
             }
 
-            int best = MemoryTaskUtil.Pick(ray, cookiePos, hitRadius);
+            int best = MemoryTaskUtil.PickSticky(ray, cookiePos, hitRadius, prevHover);
             if (best >= cookies.Length || best >= plateKind.Length) best = -1;
             hovered = best;
             if (best >= 0)
             {
                 Hovering = true;
-                HoverPoint = cookiePos[best];
+                HoverPoint = MemoryTaskUtil.Soft(ray, cookiePos[best]);
             }
             if (phase != Phase.Input || !click || best < 0 || best >= plateKind.Length) return;
             if (progress < 0 || progress >= order.Count) return;

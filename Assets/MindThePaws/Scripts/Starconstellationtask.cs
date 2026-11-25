@@ -449,16 +449,17 @@ namespace MindThePaws
         public void Feed(Ray ray, bool click)
         {
             Hovering = false;
+            int prevHover = hovered;
             hovered = -1;
             if (Finished || root == null || !root.activeSelf) return;
             var pts = new Vector3[stars.Length];
             for (int i = 0; i < stars.Length; i++) pts[i] = stars[i] != null && i < activeStars ? stars[i].pos : new Vector3(0f, -1000f, 0f);
-            int best = MemoryTaskUtil.Pick(ray, pts, hitRadius);
+            int best = MemoryTaskUtil.PickSticky(ray, pts, hitRadius, prevHover);
             hovered = best;
             if (best >= 0)
             {
                 Hovering = true;
-                HoverPoint = pts[best];
+                HoverPoint = MemoryTaskUtil.Soft(ray, pts[best]);
             }
             if (phase != Phase.Input || !click || best < 0 || best >= stars.Length || best >= activeStars) return;
             if (progress < 0 || progress >= seq.Count) return;

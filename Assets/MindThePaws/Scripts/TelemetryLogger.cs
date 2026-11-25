@@ -30,7 +30,7 @@ namespace MindThePaws
             "item_index,distraction_count,distraction_seconds,safety_triggered," +
             "baseline_bpm,baseline_source," +
             "memtask,memtask_max_level,memtask_max_sequence,memtask_correct,memtask_mistakes," +
-            "safety_choices,chaos_intensity";
+            "safety_choices,chaos_intensity,hr_bpm_at_guess";
 
         const string EventsHeader = "timestamp_utc,session_id,participant,event,detail";
 
@@ -54,6 +54,19 @@ namespace MindThePaws
         }
 
         public void SetChaosIntensity(float intensity) { chaosIntensity = intensity; }
+
+        /// Participant nou fără să repornești aplicația (butonul „Sesiune nouă”): ID nou, sesiune nouă, fără pulsul vechi.
+        public void StartNewSession()
+        {
+            sessionId = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss", Inv);
+            if (autoParticipantId) participantId = NextParticipantId();
+            baselineBpm = float.NaN;
+            baselineSource = "";
+            SetMemoryTask("", 0, 0, 0, 0);
+            ResetSession();
+            LogEvent("session_start", "new session");
+            Debug.Log($"[MindThePaws] Sesiune nouă · participant: {participantId}");
+        }
 
         public void ResetSession()
         {
@@ -174,7 +187,7 @@ namespace MindThePaws
                              Vector3 hidden, Vector3 guess,
                              float errorM, float errorHorizontalM, float angleDeg,
                              float hideToGuessS, float guessDurationS,
-                             int distractionCount, float distractionSeconds, bool safetyTriggered)
+                             int distractionCount, float distractionSeconds, bool safetyTriggered, int hrAtGuess = -1)
         {
             string F(float v) => v.ToString("F4", Inv);
             string line = string.Join(",",
@@ -187,7 +200,8 @@ namespace MindThePaws
                 itemIndex.ToString(Inv), distractionCount.ToString(Inv), F(distractionSeconds), safetyTriggered ? "1" : "0",
                 float.IsNaN(baselineBpm) ? "" : baselineBpm.ToString("F1", Inv), baselineSource,
                 memTask, memMaxLevel.ToString(Inv), memMaxSeq.ToString(Inv), memCorrect.ToString(Inv), memMistakes.ToString(Inv),
-                safetyChoices, chaosIntensity.ToString("F2", Inv));
+                safetyChoices, chaosIntensity.ToString("F2", Inv),
+                hrAtGuess > 0 ? hrAtGuess.ToString(Inv) : "");
             try { File.AppendAllText(path, line + "\n"); }
             catch (Exception e) { Debug.LogError($"[MindThePaws] Nu pot scrie în CSV: {e.Message}"); }
             Debug.Log($"[MindThePaws] trial {trial}.{itemIndex}: {errorM * 100f:0.0} cm");
